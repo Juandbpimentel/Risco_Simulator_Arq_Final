@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <ctype.h>
 
 /* Risc-O memory size */
 #define RISCO_MEM_SIZE (0x2000)
@@ -100,7 +101,7 @@ static int io_char_read(void) {
 	if (scanf(" %c", &ch) != 1) {
 		return 0;
 	}
-	printf("IN => %d\n", ch);
+	/* Não ecoar o input para stdout (o avaliador espera apenas as saídas do programa) */
 	return (int)ch;
 }
 
@@ -109,16 +110,18 @@ static int io_int_read(void) {
 	if (scanf("%d", &value) != 1) {
 		value = 0;
 	}
-	printf("IN => %d\n", value);
+	/* Não ecoar o input para stdout */
 	return value;
 }
 
 static void io_char_write(int value) {
-	printf("OUT <= %c\n", (char)(value & 0xFF));
+	/* Escrever apenas o caractere seguido de nova linha, sem prefixos */
+	printf("%c\n", (char)(value & 0xFF));
 }
 
 static void io_int_write(int value) {
-	printf("OUT <= %d\n", value);
+	/* Escrever apenas o número seguido de nova linha, sem prefixos */
+	printf("%d\n", value);
 }
 
 static uint16_t mem_read(risco_t *cpu, uint16_t addr) {
@@ -367,46 +370,70 @@ static void print_state(const risco_t *cpu) {
 	printf("Z = %d\n", cpu->flagZ);
 	printf("C = %d\n", cpu->flagC);
 
-	if (get_sp(cpu) != 0x2000) {
-		int sp = (int)get_sp(cpu);
-		for (int addr = 0x1FFF; addr >= sp; addr--) {
-			printf("[0x%04X] = 0x%04X\n", addr, cpu->memory[addr]);
-		}
+	/* Primeiro, imprimir todas as posições de memória acessadas em ordem crescente,
+	   mas **excluir** a região da pilha (será impressa depois). */
+	int sp = (int)get_sp(cpu);
+	for (int addr = 0; addr < RISCO_MEM_SIZE; addr++) {
+		if (!cpu->accessed[addr]) continue;
+		/* Se a pilha estiver em seu valor inicial, não precisamos excluir nada. Caso contrário,
+		   excluir endereços >= sp (região de pilha) para evitar duplicação e garantir
+		   que os endereços de memória apareçam antes da pilha. */
+		if (sp != 0x2000 && addr >= sp) continue;
+		printf("[0x%04X] = 0x%04X\n", addr, cpu->memory[addr]);
 	}
 
-	bool has_access = false;
-	for (int addr = 0; addr < RISCO_MEM_SIZE; addr++) {
-		if (cpu->accessed[addr]) {
-			has_access = true;
-			break;
-		}
-	}
-	if (has_access) {
-		for (int addr = 0; addr < RISCO_MEM_SIZE; addr++) {
-			if (cpu->accessed[addr]) {
-				printf("[0x%04X] = 0x%04X\n", addr, cpu->memory[addr]);
-			}
+	/* Depois, imprimir a região de pilha (se diferente da pilha inicial), do topo para baixo */
+	if (sp != 0x2000) {
+		for (int addr = 0x1FFF; addr >= sp; addr--) {
+			printf("[0x%04X] = 0x%04X\n", addr, cpu->memory[addr]);
 		}
 	}
 }
 
 int main(void) {
 	int num_breakpoints = 0;
-	if (scanf("%d", &num_breakpoints) != 1) {
-		return 0;
-	}
-
 	bool breakpoints[RISCO_MEM_SIZE];
 	memset(breakpoints, 0, sizeof(breakpoints));
 
-	for (int i = 0; i < num_breakpoints; i++) {
-		unsigned int addr = 0;
-		if (scanf("%x", &addr) != 1) {
-			addr = 0;
+	char linebuf[256];
+	bool first_line_is_mem = false;
+	char first_mem_line[256] = {0};
+
+	/* Ler a primeira linha não-vazia e sem comentários. Pode ser o número de breakpoints
+	   ou diretamente a primeira linha de memória (formato: "%x %x ..."). */
+	while (fgets(linebuf, sizeof(linebuf), stdin) != NULL) {
+		char *p = strstr(linebuf, "//");
+		if (p) *p = '\0';
+		p = strchr(linebuf, ';');
+		if (p) *p = '\0';
+		/* Trim leading whitespace */
+		char *s = linebuf;
+		while (*s && isspace((unsigned char)*s)) s++;
+		if (*s == '\0') continue;
+
+			/* Primeiro, ver se a linha parece ser uma linha de memória: dois hexadecimais ("%x %x").
+		   Isso evita confundir linhas que começam com "0000 ..." com o número de breakpoints. */
+		unsigned int tmp_addr = 0, tmp_data = 0;
+		if (sscanf(s, "%x %x", &tmp_addr, &tmp_data) == 2) {
+			/* É linha de memória */
+			strncpy(first_mem_line, linebuf, sizeof(first_mem_line) - 1);
+			first_line_is_mem = true;
+		} else if (sscanf(s, "%d", &num_breakpoints) == 1) {
+			/* Ler os endereços de breakpoint seguintes (linha a linha) */
+			for (int i = 0; i < num_breakpoints; i++) {
+				if (fgets(linebuf, sizeof(linebuf), stdin) == NULL) break;
+				p = strstr(linebuf, "//");
+				if (p) *p = '\0';
+				p = strchr(linebuf, ';');
+				if (p) *p = '\0';
+				unsigned int addr = 0;
+				if (sscanf(linebuf, "%x", &addr) != 1) addr = 0;
+				if (addr < RISCO_MEM_SIZE) breakpoints[addr] = true;
+			}
+		} else {
+			/* Linha inválida/irrelevante — ignorar */
 		}
-		if (addr < RISCO_MEM_SIZE) {
-			breakpoints[addr] = true;
-		}
+		break;
 	}
 
 	risco_t cpu;
@@ -416,12 +443,37 @@ int main(void) {
 
 	unsigned int address = 0;
 	unsigned int data = 0;
-	while (scanf("%x %x", &address, &data) == 2) {
-		if (address == 0 && data == 0) {
-			break;
+
+	/* Se a primeira linha já era uma linha de memória (quando não havia número de
+	   breakpoints no início do arquivo), processá-la primeiro. */
+	if (first_line_is_mem) {
+		char *p = strstr(first_mem_line, "//");
+		if (p) *p = '\0';
+		p = strchr(first_mem_line, ';');
+		if (p) *p = '\0';
+		if (sscanf(first_mem_line, "%x %x", &address, &data) == 2) {
+			if (!(address == 0 && data == 0) && address < RISCO_MEM_SIZE) {
+				cpu.memory[address] = (uint16_t)(data & 0xFFFF);
+			}
 		}
-		if (address < RISCO_MEM_SIZE) {
-			cpu.memory[address] = (uint16_t)(data & 0xFFFF);
+	}
+
+	/* Ler o restante das linhas de memória, ignorando comentários iniciados por '//' ou ';' */
+	while (fgets(linebuf, sizeof(linebuf), stdin) != NULL) {
+		/* Remover comentários '//' */
+		char *p = strstr(linebuf, "//");
+		if (p) *p = '\0';
+		/* Remover comentários ';' */
+		p = strchr(linebuf, ';');
+		if (p) *p = '\0';
+		/* Tentar fazer o parse dos dois hexadecimais */
+		if (sscanf(linebuf, "%x %x", &address, &data) == 2) {
+			if (address == 0 && data == 0) {
+				break;
+			}
+			if (address < RISCO_MEM_SIZE) {
+				cpu.memory[address] = (uint16_t)(data & 0xFFFF);
+			}
 		}
 	}
 
