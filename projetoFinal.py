@@ -56,8 +56,8 @@ class Risc_O:
     def get_pc(self):
         return self.reg[15]
 
-    def set_nextPc(self, nextPc):
-        self.nextPc = nextPc
+    def set_nextPc(self, valor):
+        self.nextPc = valor & 0xFFFF
 
     def confirm_NextPc(self):
         self.reg[15] = self.nextPc
@@ -90,31 +90,36 @@ def JMP_expecial_handler(
 
 def JMP_instruction(processador: Risc_O, ibr: int):
     offset = c_int16(ibr).value >> 4
-    processador.set_nextPc(processador.get_pc() + 1 + offset)
+    novo_destino = processador.get_pc() + 1 + offset
+    processador.set_nextPc(novo_destino)
 
 
 def JEQ_instruction(processador: Risc_O, ibr: int):
     offset = c_int16(ibr << 2).value >> 6
     if processador.flag0 == 1:
-        processador.set_nextPc(processador.get_pc() + 1 + offset)
+        novo_destino = processador.get_pc() + 1 + offset
+        processador.set_nextPc(novo_destino)
 
 
 def JNE_instruction(processador: Risc_O, ibr: int):
     offset = c_int16(ibr << 2).value >> 6
     if processador.flag0 == 0:
-        processador.set_nextPc(processador.get_pc() + 1 + offset)
+        novo_destino = processador.get_pc() + 1 + offset
+        processador.set_nextPc(novo_destino)
 
 
 def JLT_instruction(processador: Risc_O, ibr: int):
     offset = c_int16(ibr << 2).value >> 6
     if processador.flag0 == 0 and processador.flagCarry == 1:
-        processador.set_nextPc(processador.get_pc() + 1 + offset)
+        novo_destino = processador.get_pc() + 1 + offset
+        processador.set_nextPc(novo_destino)
 
 
 def JGE_instruction(processador: Risc_O, ibr: int):
     offset = c_int16(ibr << 2).value >> 6
     if processador.flag0 == 1 or processador.flagCarry == 0:
-        processador.set_nextPc(processador.get_pc() + 1 + offset)
+        novo_destino = processador.get_pc() + 1 + offset
+        processador.set_nextPc(novo_destino)
 
 
 def PUSH_instruction(processador: Risc_O, ibr: int):
@@ -125,11 +130,16 @@ def PUSH_instruction(processador: Risc_O, ibr: int):
 
 def POP_instruction(processador: Risc_O, ibr: int):
     rd = (ibr >> 12) & 0x000F
-    processador.reg[rd] = processador.memory[processador.get_sp()]
+    valor = processador.memory[processador.get_sp()]
     processador.set_sp(processador.get_sp() + 1)
 
+    if rd == 15:
+        processador.set_nextPc(valor)
+    else:
+        processador.reg[rd] = valor
 
-def ADD_instruction(processador: Risc_O, ibr: int):
+
+def ADD_instruction(processador: Risc_O, ibr: int):  # Juan Pimentel
     rd = (ibr >> 12) & 0x000F
     rm = (ibr >> 8) & 0x000F
     rn = (ibr >> 4) & 0x000F
@@ -158,7 +168,7 @@ def CMP_instruction(processador: Risc_O, ibr: int):
 
 def MOV_instruction(processador: Risc_O, ibr: int):
     rd = (ibr >> 12) & 0x000F
-    im = c_int16(ibr << 4).value >> 8
+    im = (ibr >> 4) & 0x00FF
     processador.reg[rd] = im & 0xFFFF
 
 
@@ -188,7 +198,7 @@ def OR_instruction(processador: Risc_O, ibr: int):
 def SHR_instruction(processador: Risc_O, ibr: int):
     rd = (ibr >> 12) & 0x000F
     rm = (ibr >> 8) & 0x000F
-    im = ibr & 0x00FF
+    im = (ibr >> 4) & 0x000F
 
     resultado = processador.reg[rm] >> im
     processador.flagCarry = (processador.reg[rm] >> (im - 1)) & 1 if im > 0 else 0
@@ -201,7 +211,7 @@ def SHR_instruction(processador: Risc_O, ibr: int):
 def SHL_instruction(processador: Risc_O, ibr: int):
     rd = (ibr >> 12) & 0x000F
     rm = (ibr >> 8) & 0x000F
-    im = ibr & 0x00FF
+    im = (ibr >> 4) & 0x000F
 
     resultado = processador.reg[rm] << im
     processador.flagCarry = 1 if resultado > 0xFFFF else 0
@@ -283,35 +293,29 @@ def STR_instruction(processador: Risc_O, ibr: int):
 
 
 def SUB_instruction(processador: Risc_O, ibr: int):
-    rd = (ibr >> 8) & 0x0F  
-    rm = (ibr >> 4) & 0x0F
-    rn = ibr & 0x0F
-
-    val_m = processador.reg[rm]
-    val_n = processador.reg[rn]
-    
-    processador.flagCarry = 1 if val_n > val_m else 0
-    processador.reg[rd] = (val_m - val_n) & 0xFFFF
-    processador.flag0 = 1 if processador.reg[rd] == 0 else 0
-    pass
+    rd, rm, rn = (ibr >> 12) & 0xF, (ibr >> 8) & 0xF, (ibr >> 4) & 0xF
+    # C = 1 se houver borrow (rm < rn)
+    processador.flagCarry = 1 if processador.reg[rm] < processador.reg[rn] else 0
+    res = (processador.reg[rm] - processador.reg[rn]) & 0xFFFF
+    processador.reg[rd] = res
+    processador.flag0 = 1 if res == 0 else 0
 
 
 def SUBI_instruction(processador: Risc_O, ibr: int):
-    rd = (ibr >> 8) & 0x0F
-    rm = (ibr >> 4) & 0x0F
-    im = ibr & 0x0F
-
-    val_m = processador.reg[rm]
-
-    processador.flagCarry = 1 if im > val_m else 0
-    processador.reg[rd] = (val_m - im) & 0xFFFF
-    processador.flag0 = 1 if processador.reg[rd] == 0 else 0
-    pass
+    rd, rm = (ibr >> 12) & 0xF, (ibr >> 8) & 0xF
+    im = (ibr >> 4) & 0xF  # Imediato de 4 bits
+    processador.flagCarry = 1 if processador.reg[rm] < im else 0
+    res = (processador.reg[rm] - im) & 0xFFFF
+    processador.reg[rd] = res
+    processador.flag0 = 1 if res == 0 else 0
 
 
-# Lembrar de adicionar a alteração das flags
 def AND_instruction(processador: Risc_O, ibr: int):
-    pass
+    rd, rm, rn = (ibr >> 12) & 0xF, (ibr >> 8) & 0xF, (ibr >> 4) & 0xF
+    res = (processador.reg[rm] & processador.reg[rn]) & 0xFFFF
+    processador.reg[rd] = res
+    processador.flag0 = 1 if res == 0 else 0
+    processador.flagCarry = 0  # Lógicas resetam carry
 
 
 operations_map = {
@@ -359,16 +363,21 @@ def main():
 
     processador_halted = False
     while not processador_halted:
-        pc = processador.get_pc()
-        ir = processador.memory[pc]
-        # 1234
+        pc_atual = processador.get_pc()
+
+        if pc_atual >= RISC_O_MEM_SIZE:
+            print(f"Program counter out of bounds: 0x{pc_atual:04X}!")
+            break
+
+        ir = processador.memory[pc_atual]
+
         if ir == 0xFFFF:  # HALT
             processador_halted = True
         else:
-            processador.set_nextPc(pc + 1)
+            processador.set_nextPc(pc_atual + 1)
 
-            op = ir & 0x000F  # 4
-            ibr = ir & 0xFFF0  # 1230
+            op = ir & 0x000F
+            ibr = ir & 0xFFF0
 
             ##INSTRUÇÕES##
 
@@ -379,7 +388,7 @@ def main():
                 print(f"Invalid instruction {ibr:04X}!")
                 break
 
-        if memoryBreakpoints[pc] or processador_halted:
+        if memoryBreakpoints[pc_atual] or processador_halted:
             for i in range(16):
                 if i == 14:
                     print(f"R{i} = 0x{processador.reg[i]:04X}")
