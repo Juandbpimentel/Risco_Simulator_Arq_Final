@@ -282,13 +282,30 @@ def STR_instruction(processador: Risc_O, ibr: int):
     pass
 
 
-# Lembrar de adicionar a alteração das flags
 def SUB_instruction(processador: Risc_O, ibr: int):
+    rd = (ibr >> 8) & 0x0F  
+    rm = (ibr >> 4) & 0x0F
+    rn = ibr & 0x0F
+
+    val_m = processador.reg[rm]
+    val_n = processador.reg[rn]
+    
+    processador.flagCarry = 1 if val_n > val_m else 0
+    processador.reg[rd] = (val_m - val_n) & 0xFFFF
+    processador.flag0 = 1 if processador.reg[rd] == 0 else 0
     pass
 
 
-# Lembrar de adicionar a alteração das flags
 def SUBI_instruction(processador: Risc_O, ibr: int):
+    rd = (ibr >> 8) & 0x0F
+    rm = (ibr >> 4) & 0x0F
+    im = ibr & 0x0F
+
+    val_m = processador.reg[rm]
+
+    processador.flagCarry = 1 if im > val_m else 0
+    processador.reg[rd] = (val_m - im) & 0xFFFF
+    processador.flag0 = 1 if processador.reg[rd] == 0 else 0
     pass
 
 
